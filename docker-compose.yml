@@ -1,0 +1,137 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: postgres-db
+    environment:
+      POSTGRES_DB: devsu_db
+      POSTGRES_USER: devsu_user
+      POSTGRES_PASSWORD: devsu_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./BaseDatos.sql:/docker-entrypoint-initdb.d/BaseDatos.sql
+    networks:
+      - devsu-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devsu_user -d devsu_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      - RABBITMQ_DEFAULT_USER=guest
+      - RABBITMQ_DEFAULT_PASS=guest
+    networks:
+      - devsu-network
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@devsu.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - devsu-network
+
+  discovery-server:
+    build:
+      context: ./discovery_server
+      dockerfile: Dockerfile
+    container_name: discovery-server
+    ports:
+      - "8761:8761"
+    networks:
+      - devsu-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8761/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: gateway
+    ports:
+      - "8080:8080"
+    depends_on:
+      discovery-server:
+        condition: service_healthy
+    networks:
+      - devsu-network
+    environment:
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+
+  cliente_persona:
+    build:
+      context: ./cliente_persona
+      dockerfile: Dockerfile
+    container_name: cliente-persona
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+    networks:
+      - devsu-network
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/devsu_db
+      - SPRING_DATASOURCE_USERNAME=devsu_user
+      - SPRING_DATASOURCE_PASSWORD=devsu_password
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_RABBITMQ_HOST=rabbitmq
+      - SPRING_RABBITMQ_PORT=5672
+      - SPRING_RABBITMQ_USERNAME=guest
+      - SPRING_RABBITMQ_PASSWORD=guest
+
+  cuenta_movimiento:
+    build:
+      context: ./cuenta_movimiento
+      dockerfile: Dockerfile
+    container_name: cuenta-movimiento
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      discovery-server:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_started
+      cliente_persona:
+        condition: service_started
+    networks:
+      - devsu-network
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/devsu_db
+      - SPRING_DATASOURCE_USERNAME=devsu_user
+      - SPRING_DATASOURCE_PASSWORD=devsu_password
+      - EUREKA_CLIENT_SERVICEURL_DEFAULTZONE=http://discovery-server:8761/eureka/
+      - SPRING_RABBITMQ_HOST=rabbitmq
+      - SPRING_RABBITMQ_PORT=5672
+      - SPRING_RABBITMQ_USERNAME=guest
+      - SPRING_RABBITMQ_PASSWORD=guest
+
+volumes:
+  postgres_data:
+
+networks:
+  devsu-network:
+    driver: bridge
